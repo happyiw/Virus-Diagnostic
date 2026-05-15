@@ -1,0 +1,52 @@
+version: '3.8'
+
+services:
+  # PostgreSQL база данных
+  postgres:
+    image: postgres:15-alpine
+    container_name: virus_diagnostic_db
+    environment:
+      POSTGRES_USER: virusdb
+      POSTGRES_PASSWORD: viruspass
+      POSTGRES_DB: virus_diagnostic
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init_db.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U virusdb"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - virus_network
+
+  # Приложение диагностики
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: virus_diagnostic_app
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: virusdb
+      DB_PASSWORD: viruspass
+      DB_NAME: virus_diagnostic
+    ports:
+      - "5000:5000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./app/data:/app/app/data
+    networks:
+      - virus_network
+
+volumes:
+  postgres_data:
+
+networks:
+  virus_network:
+    driver: bridge

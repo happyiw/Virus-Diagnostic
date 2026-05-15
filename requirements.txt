@@ -1,0 +1,9 @@
+tkinter
+tinydb
+requests
+psycopg2-binary
+sqlalchemy
+scikit-learn
+pandas
+numpy
+python-dotenv
