@@ -13,34 +13,11 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./init_db.sql:/docker-entrypoint-initdb.d/init.sql
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U virusdb"]
+      test: ["CMD-SHELL", "pg_isready -U virusdb -d virus_diagnostic"]
       interval: 10s
       timeout: 5s
       retries: 5
-    networks:
-      - virus_network
-
-  # Приложение диагностики
-  app:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: virus_diagnostic_app
-    environment:
-      DB_HOST: postgres
-      DB_PORT: 5432
-      DB_USER: virusdb
-      DB_PASSWORD: viruspass
-      DB_NAME: virus_diagnostic
-    ports:
-      - "5000:5000"
-    depends_on:
-      postgres:
-        condition: service_healthy
-    volumes:
-      - ./app/data:/app/app/data
     networks:
       - virus_network
 

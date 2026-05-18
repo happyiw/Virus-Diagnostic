@@ -48,58 +48,95 @@ class DiagnosticEngine:
             return None
 
     def diagnose(self, input_values):
-        # Сначала пробуем ML модель
+        expert_result = self.diagnose_with_rules(input_values)
+        ml_result = None
         if self.ml_model is not None:
-            ml_diagnosis = self.diagnose_with_ml(input_values)
-            if ml_diagnosis:
-                return ml_diagnosis
-        
-        # Fallback на правила
-        return self.diagnose_with_rules(input_values)
-    
+            ml_result = self.diagnose_with_ml(input_values)
+
+        return {
+            'expert_diagnosis': expert_result['diagnosis'],
+            'rejected': expert_result['rejected'],
+            'ml_diagnosis': ml_result
+        }
+
     def diagnose_with_rules(self, input_values):
-        # Сначала проверить на "Чистая система"
         normal_ranges = self.kb.get_normal_ranges()
-        is_clean = True
+        abnormal_features = []
         for feature, value in input_values.items():
-            normal = normal_ranges.get(feature, [])
+            normal = normal_ranges.get(feature)
             if isinstance(normal, list) and len(normal) == 2:
                 if not (normal[0] <= value <= normal[1]):
-                    is_clean = False
-                    break
+                    abnormal_features.append(feature)
             elif isinstance(normal, list) and len(normal) == 1:
                 if value != normal[0]:
-                    is_clean = False
-                    break
+                    abnormal_features.append(feature)
 
-        if is_clean:
-            return 'Чистая система'
+        if not abnormal_features:
+            return {'diagnosis': 'Чистая система', 'rejected': []}
 
-        # Проверить классы
         classes = self.kb.get_classes()
         class_features = self.kb.get_class_features()
         class_values = self.kb.get_class_values()
 
+        candidates = []
         for cls in classes:
             if cls == 'Чистая система':
                 continue
+
             features = class_features.get(cls, [])
-            match = True
+            if not features:
+                continue
+
+            shared = set(features).intersection(abnormal_features)
+            if not shared:
+                continue
+
+            reasons = []
             for feature in features:
                 if feature not in input_values:
-                    match = False
-                    break
+                    reasons.append(f"не задано значение признака '{feature}'")
+                    continue
+
                 value = input_values[feature]
-                expected = class_values.get(cls, {}).get(feature, [])
+                expected = class_values.get(cls, {}).get(feature)
+                if expected is None:
+                    continue
+
                 if isinstance(expected, list) and len(expected) == 2:
                     if not (expected[0] <= value <= expected[1]):
-                        match = False
-                        break
+                        reasons.append(f"для признака '{feature}' значение {value} не попадает в диапазон {expected}")
                 elif isinstance(expected, list) and len(expected) == 1:
                     if value != expected[0]:
-                        match = False
-                        break
-            if match:
-                return cls
+                        reasons.append(f"для признака '{feature}' ожидается значение {expected[0]}, но получено {value}")
 
-        return 'Неизвестный класс'  # Или наиболее близкий
+            candidates.append({
+                'class': cls,
+                'reasons': reasons,
+                'shared_count': len(shared)
+            })
+
+        if not candidates:
+            return {'diagnosis': 'Неизвестный класс', 'rejected': []}
+
+        candidates.sort(key=lambda item: (len(item['reasons']), -item['shared_count']))
+
+        best = candidates[0]
+        diagnosis = best['class'] if len(best['reasons']) == 0 else 'Неизвестный класс'
+
+        rejected = []
+        for item in candidates:
+            if item['class'] == diagnosis:
+                continue
+            if item['reasons']:
+                rejected.append({
+                    'class': item['class'],
+                    'reason': '; '.join(item['reasons'])
+                })
+
+        if diagnosis == 'Неизвестный класс' and candidates:
+            rejected = [{
+                'class': item['class'],
+                'reason': '; '.join(item['reasons']) if item['reasons'] else 'пользовательские признаки не совпадают'
+            } for item in candidates]
+
+        return {'diagnosis': diagnosis, 'rejected': rejected}

@@ -37,9 +37,72 @@ class DatasetPreparer:
         """Загружает датасет из JSON файла"""
         with open(self.dataset_path, 'r', encoding='utf-8') as f:
             self.data = json.load(f)
+        if not isinstance(self.data, list):
+            raise ValueError("Датасет должен представлять собой список образцов")
         print(f"Датасет загружен: {len(self.data)} образцов")
+        self.validate_dataset()
         return self.data
-    
+
+    def validate_dataset(self):
+        """Выполняет базовую проверку качества датасета"""
+        if self.data is None:
+            raise ValueError("Датасет не загружен")
+
+        required_keys = set(self.FEATURE_NAMES + ['label'])
+        sample_signatures = set()
+        class_counts = {}
+        invalid_samples = 0
+
+        for sample in self.data:
+            if not isinstance(sample, dict):
+                raise ValueError("Каждый образец должен быть словарём")
+
+            if set(sample.keys()) != required_keys:
+                missing = required_keys - set(sample.keys())
+                extra = set(sample.keys()) - required_keys
+                raise ValueError(
+                    f"Неверный набор ключей в образце: отсутствуют {missing}, лишние {extra}"
+                )
+
+            try:
+                feature_values = [
+                    float(sample['cpu_load']),
+                    float(sample['memory_usage']),
+                    float(sample['network_traffic']),
+                    float(sample['file_operations']),
+                    int(sample['remote_management'])
+                ]
+            except Exception as exc:
+                raise ValueError(f"Неверные значения признаков в образце: {exc}")
+
+            if sample['remote_management'] not in [0, 1]:
+                raise ValueError("remote_management должен быть 0 или 1")
+
+            label = sample['label']
+            if not isinstance(label, str) or not label.strip():
+                raise ValueError("Метка класса должна быть непустой строкой")
+
+            class_counts[label] = class_counts.get(label, 0) + 1
+            sample_signatures.add(tuple([sample[key] for key in sorted(sample.keys())]))
+
+        duplicate_ratio = 1.0 - len(sample_signatures) / len(self.data)
+        if duplicate_ratio > 0:
+            print(f"Дублированных примеров: {duplicate_ratio * 100:.1f}%")
+        if duplicate_ratio > 0.2:
+            print("Внимание: датасет содержит много повторяющихся образцов")
+
+        if len(class_counts) == 0:
+            raise ValueError("В датасете нет ни одного класса")
+
+        most_common = max(class_counts.values())
+        least_common = min(class_counts.values())
+        if most_common / least_common > 10:
+            print("Внимание: классы сильно несбалансированы")
+
+        print("Распределение по классам:")
+        for cls, count in sorted(class_counts.items(), key=lambda x: x[1], reverse=True):
+            print(f"  {cls}: {count}")
+
     def prepare_features_and_labels(self):
         """Подготавливает признаки (X) и метки классов (y)"""
         if self.data is None:
@@ -78,7 +141,8 @@ class DatasetPreparer:
             self.prepare_features_and_labels()
         
         self.X_train, self.X_test, self.y_train, self.y_test = train_test_split(
-            self.X, self.y_encoded, test_size=test_size, random_state=random_state
+            self.X, self.y_encoded, test_size=test_size, random_state=random_state,
+            stratify=self.y_encoded if len(set(self.y_encoded)) > 1 else None
         )
         
         print(f"Обучающая выборка: {self.X_train.shape[0]} образцов")

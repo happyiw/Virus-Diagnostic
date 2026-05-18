@@ -22,8 +22,5 @@ ENV DB_USER=virusdb
 ENV DB_PASSWORD=viruspass
 ENV DB_NAME=virus_diagnostic
 
-# Инициализация: генерация датасета и обучение модели (если нужно)
-RUN python init.py 2>&1 | head -100 || echo "Инициализация пропущена или завершена"
-
 # Команда для запуска приложения
-CMD ["python", "app/main.py"]
+CMD ["sh", "-lc", "python -m app.database && python app/main.py"]

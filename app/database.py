@@ -67,6 +67,9 @@ class ClassFeature(Base):
     class_id = Column(Integer, ForeignKey("malware_classes.id"), nullable=False)
     feature_id = Column(Integer, ForeignKey("diagnostic_features.id"), nullable=False)
     
+    malware_class = relationship("MalwareClass", backref="class_features")
+    feature = relationship("DiagnosticFeature")
+    
     __table_args__ = (UniqueConstraint('class_id', 'feature_id', name='_class_feature_uc'),)
 
 
@@ -78,6 +81,9 @@ class ClassFeatureValue(Base):
     feature_id = Column(Integer, ForeignKey("diagnostic_features.id"), nullable=False)
     min_value = Column(Numeric(20, 2), nullable=False)
     max_value = Column(Numeric(20, 2), nullable=False)
+    
+    malware_class = relationship("MalwareClass")
+    feature = relationship("DiagnosticFeature")
     
     __table_args__ = (UniqueConstraint('class_id', 'feature_id', name='_class_feature_value_uc'),)
 
@@ -106,28 +112,69 @@ def init_database_from_json():
     session = SessionLocal()
     
     try:
-        # Загружаем данные из JSON файлов
         data_dir = os.path.join(os.path.dirname(__file__), 'data')
-        
+
         # Классы
         with open(os.path.join(data_dir, 'classes.json'), 'r', encoding='utf-8') as f:
-            classes_data = json.load(f)
-            for class_name in classes_data.get('classes', []):
+            classes_data = json.load(f).get('data', [])
+            for class_name in classes_data:
                 if not session.query(MalwareClass).filter_by(name=class_name).first():
                     session.add(MalwareClass(name=class_name))
-        
+
         # Признаки
         with open(os.path.join(data_dir, 'features.json'), 'r', encoding='utf-8') as f:
-            features_data = json.load(f)
-        
+            features_data = json.load(f).get('data', [])
         with open(os.path.join(data_dir, 'feature_types.json'), 'r', encoding='utf-8') as f:
-            types_data = json.load(f)
-        
-        for feature_name in features_data.get('features', []):
+            types_data = json.load(f).get('data', {})
+
+        for feature_name in features_data:
             if not session.query(DiagnosticFeature).filter_by(name=feature_name).first():
-                feature_type = types_data['feature_types'].get(feature_name, 'integer')
+                feature_type = types_data.get(feature_name, 'integer')
                 session.add(DiagnosticFeature(name=feature_name, feature_type=feature_type))
-        
+
+        # Диапазоны
+        with open(os.path.join(data_dir, 'ranges.json'), 'r', encoding='utf-8') as f:
+            ranges_data = json.load(f).get('data', {})
+
+        for feature_name, value in ranges_data.get('valid_ranges', {}).items():
+            feature = session.query(DiagnosticFeature).filter_by(name=feature_name).first()
+            if feature and not session.query(ValueRange).filter_by(feature_id=feature.id).first():
+                session.add(ValueRange(feature_id=feature.id, min_value=value[0], max_value=value[1]))
+
+        for feature_name, value in ranges_data.get('normal_ranges', {}).items():
+            feature = session.query(DiagnosticFeature).filter_by(name=feature_name).first()
+            if feature and not session.query(NormalRange).filter_by(feature_id=feature.id).first():
+                session.add(NormalRange(feature_id=feature.id, min_value=value[0], max_value=value[1]))
+
+        # Признаки классов
+        with open(os.path.join(data_dir, 'class_features.json'), 'r', encoding='utf-8') as f:
+            class_features_data = json.load(f).get('data', {})
+
+        for class_name, feature_list in class_features_data.items():
+            malware_class = session.query(MalwareClass).filter_by(name=class_name).first()
+            if not malware_class:
+                continue
+            for feature_name in feature_list:
+                feature = session.query(DiagnosticFeature).filter_by(name=feature_name).first()
+                if feature and not session.query(ClassFeature).filter_by(class_id=malware_class.id, feature_id=feature.id).first():
+                    session.add(ClassFeature(class_id=malware_class.id, feature_id=feature.id))
+
+        # Значения классов
+        with open(os.path.join(data_dir, 'class_values.json'), 'r', encoding='utf-8') as f:
+            class_values_data = json.load(f).get('data', {})
+
+        for class_name, values in class_values_data.items():
+            malware_class = session.query(MalwareClass).filter_by(name=class_name).first()
+            if not malware_class:
+                continue
+            for feature_name, value in values.items():
+                feature = session.query(DiagnosticFeature).filter_by(name=feature_name).first()
+                if feature and not session.query(ClassFeatureValue).filter_by(class_id=malware_class.id, feature_id=feature.id).first():
+                    if isinstance(value, list) and len(value) == 2:
+                        session.add(ClassFeatureValue(class_id=malware_class.id, feature_id=feature.id, min_value=value[0], max_value=value[1]))
+                    elif isinstance(value, list) and len(value) == 1:
+                        session.add(ClassFeatureValue(class_id=malware_class.id, feature_id=feature.id, min_value=value[0], max_value=value[0]))
+
         session.commit()
         print("БД инициализирована успешно из JSON файлов")
         

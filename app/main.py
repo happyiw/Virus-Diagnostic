@@ -1,9 +1,8 @@
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, filedialog
 from app.knowledge_base import KnowledgeBase
 from app.diagnostic_engine import DiagnosticEngine
-from app.llm_helper import LLMHelper
-from tinydb import Query
+import json
 
 class KnowledgeEditor:
     def __init__(self, root, kb):
@@ -101,6 +100,9 @@ class KnowledgeEditor:
         btn_refresh = ttk.Button(right_frame, text='Обновить списки', command=self.refresh_all)
         btn_refresh.pack(fill=tk.X, pady=(20, 2))
 
+        btn_import = ttk.Button(right_frame, text='Импорт из JSON', command=lambda: self.import_json('classes'))
+        btn_import.pack(fill=tk.X, pady=2)
+
     def add_class(self, entry, listbox):
         name = entry.get().strip()
         if name:
@@ -153,13 +155,15 @@ class KnowledgeEditor:
         btn_refresh = ttk.Button(right_frame, text='Обновить списки', command=self.refresh_feature_comboboxes)
         btn_refresh.pack(fill=tk.X, pady=(20, 2))
 
+        btn_import = ttk.Button(right_frame, text='Импорт из JSON', command=lambda: self.import_json('features'))
+        btn_import.pack(fill=tk.X, pady=2)
+
     def add_feature(self, entry, listbox):
         name = entry.get().strip()
         if name:
             features = self.kb.get_features()
             if name not in features:
-                features.append(name)
-                self.kb.db.update({'data': features}, Query().type == 'features')
+                self.kb.add_feature(name)
                 listbox.insert(tk.END, name)
                 self.refresh_feature_comboboxes()
             entry.delete(0, tk.END)
@@ -170,12 +174,9 @@ class KnowledgeEditor:
         selection = listbox.curselection()
         if selection:
             name = listbox.get(selection)
-            features = self.kb.get_features()
-            if name in features:
-                features.remove(name)
-                self.kb.db.update({'data': features}, Query().type == 'features')
-                listbox.delete(selection)
-                self.refresh_feature_comboboxes()
+            self.kb.remove_feature(name)
+            listbox.delete(selection)
+            self.refresh_feature_comboboxes()
 
     def create_valid_tab(self, parent):
         frame = ttk.Frame(parent)
@@ -206,30 +207,27 @@ class KnowledgeEditor:
         btn_load = ttk.Button(frame, text='Загрузить текущие значения', command=lambda: self.load_valid_range(feature_var.get(), type_var, min_entry, max_entry))
         btn_load.grid(row=5, column=0, columnspan=2, sticky=tk.EW, pady=2)
 
-        frame.columnconfigure(1, weight=1)
+        btn_import = ttk.Button(frame, text='Импорт из JSON', command=lambda: self.import_json('valid_ranges'))
+        btn_import.grid(row=6, column=0, columnspan=2, sticky=tk.EW, pady=10)
 
     def set_valid(self, feature, ftype, min_str, max_str):
         if not feature or not ftype:
             messagebox.showerror("Ошибка", "Выберите признак и тип")
             return
-        types = self.kb.get_feature_types()
-        types[feature] = ftype
-        self.kb.db.update({'data': types}, Query().type == 'feature_types')
+        self.kb.set_feature_type(feature, ftype)
 
-        ranges = self.kb.get_valid_ranges()
         if ftype == 'boolean':
-            ranges[feature] = [0, 1]
-            min_str = '0'
-            max_str = '1'
+            min_val = 0
+            max_val = 1
         else:
             try:
                 min_val = float(min_str)
                 max_val = float(max_str)
-                ranges[feature] = [min_val, max_val]
-            except:
+            except ValueError:
                 messagebox.showerror("Ошибка", "Неверный диапазон")
                 return
-        self.kb.db.update({'data': ranges}, Query().type == 'valid_ranges')
+
+        self.kb.set_valid_range(feature, min_val, max_val)
         messagebox.showinfo("Успех", "Допустимые значения установлены")
 
     def load_valid_range(self, feature, type_var, min_entry, max_entry):
@@ -278,7 +276,8 @@ class KnowledgeEditor:
         btn_save = ttk.Button(frame, text='Сохранить', command=lambda: self.save_class_features(class_var.get(), listbox))
         btn_save.pack(fill=tk.X, pady=4)
 
-        self.current_class_features_listbox = listbox
+        btn_import = ttk.Button(frame, text='Импорт из JSON', command=lambda: self.import_json('class_features'))
+        btn_import.pack(fill=tk.X, pady=4)
 
     def load_class_features(self, cls, listbox):
         if not cls:
@@ -296,9 +295,7 @@ class KnowledgeEditor:
             messagebox.showerror("Ошибка", "Выберите класс")
             return
         selected = [listbox.get(i) for i in listbox.curselection()]
-        class_features = self.kb.get_class_features()
-        class_features[cls] = selected
-        self.kb.db.update({'data': class_features}, Query().type == 'class_features')
+        self.kb.set_class_features(cls, selected)
         messagebox.showinfo("Успех", "Признаки сохранены")
 
     def create_class_values_tab(self, parent):
@@ -320,6 +317,9 @@ class KnowledgeEditor:
 
         btn_save = ttk.Button(frame, text='Сохранить', command=lambda: self.save_class_values(class_var.get()))
         btn_save.pack(fill=tk.X, pady=4)
+
+        btn_import = ttk.Button(frame, text='Импорт из JSON', command=lambda: self.import_json('class_values'))
+        btn_import.pack(fill=tk.X, pady=4)
 
     def load_class_values(self, cls):
         if not cls:
@@ -388,17 +388,42 @@ class KnowledgeEditor:
                     messagebox.showerror("Ошибка", f"Неверный диапазон для {feat}")
                     return
         
-        class_values = self.kb.get_class_values()
-        class_values[cls] = values
-        self.kb.db.update({'data': class_values}, Query().type == 'class_values')
+        self.kb.set_class_values(cls, values)
         messagebox.showinfo("Успех", "Значения сохранены")
 
+    def import_json(self, data_type):
+        """Импорт данных из JSON файла"""
+        file_path = filedialog.askopenfilename(
+            title=f"Выберите JSON файл для {data_type}",
+            filetypes=[("JSON files", "*.json"), ("All files", "*.*")]
+        )
+        if not file_path:
+            return
+        
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            
+            if 'data' not in data:
+                messagebox.showerror("Ошибка", "JSON файл должен содержать ключ 'data'")
+                return
+            
+            # Обновляем базу данных
+            self.kb.import_data(data_type, data['data'])
+            
+            # Обновляем интерфейс
+            self.refresh_all()
+            
+            messagebox.showinfo("Успех", f"Данные {data_type} импортированы успешно")
+            
+        except Exception as e:
+            messagebox.showerror("Ошибка", f"Ошибка при импорте: {str(e)}")
+
 class InputSystem:
-    def __init__(self, root, kb, engine, llm):
+    def __init__(self, root, kb, engine):
         self.root = root
         self.kb = kb
         self.engine = engine
-        self.llm = llm
         self.root.title("Ввод исходных данных")
         self.create_widgets()
 
@@ -432,8 +457,12 @@ class InputSystem:
         btn_view_kb = ttk.Button(button_frame, text='Просмотреть базу знаний', command=self.view_kb)
         btn_view_kb.pack(side=tk.LEFT)
 
-        self.result_label = ttk.Label(content, text='', wraplength=520)
-        self.result_label.grid(row=len(features) + 1, column=0, columnspan=2, pady=(16, 0), sticky=tk.W)
+        self.diagnosis_label = ttk.Label(content, text='', font=('Arial', 11, 'bold'), wraplength=520)
+        self.diagnosis_label.grid(row=len(features) + 1, column=0, columnspan=2, pady=(16, 6), sticky=tk.W)
+
+        ttk.Label(content, text='Отклонённые гипотезы:', font=('Arial', 10, 'underline')).grid(row=len(features) + 2, column=0, columnspan=2, sticky=tk.W)
+        self.rejected_text = tk.Text(content, height=8, wrap=tk.WORD, state=tk.DISABLED)
+        self.rejected_text.grid(row=len(features) + 3, column=0, columnspan=2, sticky=tk.EW, pady=(4, 0))
 
     def view_kb(self):
         view_window = tk.Toplevel(self.root)
@@ -442,36 +471,95 @@ class InputSystem:
         text = tk.Text(view_window, wrap=tk.WORD)
         text.pack(fill=tk.BOTH, expand=True)
 
-        kb_info = f"Классы: {self.kb.get_classes()}\n\n"
-        kb_info += f"Признаки: {self.kb.get_features()}\n\n"
-        kb_info += f"Признаки классов: {self.kb.get_class_features()}\n\n"
-        kb_info += f"Значения классов: {self.kb.get_class_values()}\n"
+        classes = self.kb.get_classes()
+        features = self.kb.get_features()
+        class_features = self.kb.get_class_features()
+        class_values = self.kb.get_class_values()
+
+        kb_info = f"Классы: {classes}\n\n"
+        kb_info += f"Признаки: {features}\n\n"
+        kb_info += "Признаки классов:\n"
+        for cls, feats in class_features.items():
+            kb_info += f"  {cls}: {feats}\n"
+        kb_info += "\nЗначения классов:\n"
+        for cls in classes:
+            values = class_values.get(cls, {})
+            if not values:
+                kb_info += f"  {cls}: {{}}\n"
+                continue
+            kb_info += f"  {cls}:\n"
+            for feat, val in values.items():
+                kb_info += f"    {feat}: {val}\n"
+        kb_info += "\n"
 
         text.insert(tk.END, kb_info)
         text.config(state=tk.DISABLED)
 
     def diagnose(self):
         input_values = {}
+        corrections = []
+        feature_types = self.kb.get_feature_types()
+        valid_ranges = self.kb.get_valid_ranges()
+
         for feature, widget in self.entries.items():
+            ftype = feature_types.get(feature, 'integer')
             if isinstance(widget, tk.IntVar):
                 value = widget.get()
             else:
+                raw = widget.get().strip()
+                if raw == '':
+                    messagebox.showerror("Ошибка", f"Введите значение для {feature}")
+                    return
                 try:
-                    value = float(widget.get())
+                    value = float(raw)
                 except ValueError:
                     messagebox.showerror("Ошибка", f"Неверное значение для {feature}")
                     return
+
+            if ftype == 'boolean':
+                value = 1 if value else 0
+            elif ftype == 'integer':
+                value = int(round(value))
+
+            if feature in valid_ranges:
+                range_value = valid_ranges[feature]
+                if isinstance(range_value, list) and len(range_value) == 2:
+                    low, high = range_value
+                    if value < low or value > high:
+                        corrected = min(max(value, low), high)
+                        corrections.append(f"{feature}: {value} → {corrected}")
+                        value = corrected
+                        if not isinstance(widget, tk.IntVar):
+                            widget.delete(0, tk.END)
+                            widget.insert(0, str(value))
+                        else:
+                            widget.set(value)
+
             input_values[feature] = value
 
-        diagnosis = self.engine.diagnose(input_values)
-        # ML модель выдает диагноз без пояснений
-        self.result_label.config(text=f'Диагноз: {diagnosis}')
+        if corrections:
+            message = "Значения приведены в допустимый диапазон:\n" + "\n".join(corrections)
+            messagebox.showinfo("Корректировка данных", message)
+
+        result = self.engine.diagnose(input_values)
+        diagnosis = result.get('expert_diagnosis', 'Неизвестный класс')
+        rejected = result.get('rejected', [])
+
+        self.diagnosis_label.config(text=f'Диагноз экспертной системы: {diagnosis}')
+
+        self.rejected_text.config(state=tk.NORMAL)
+        self.rejected_text.delete('1.0', tk.END)
+        if rejected:
+            for item in rejected:
+                self.rejected_text.insert(tk.END, f"- {item['class']}: {item['reason']}\n")
+        else:
+            self.rejected_text.insert(tk.END, 'Нет отклонённых гипотез для данной ситуации.')
+        self.rejected_text.config(state=tk.DISABLED)
 
 class MainApp:
     def __init__(self):
         self.kb = KnowledgeBase()
         self.engine = DiagnosticEngine(self.kb)
-        self.llm = LLMHelper()
 
         self.root = tk.Tk()
         self.root.title("Экспертная система диагностики ПО")
@@ -488,7 +576,7 @@ class MainApp:
 
     def open_input(self):
         input_window = tk.Toplevel(self.root)
-        InputSystem(input_window, self.kb, self.engine, self.llm)
+        InputSystem(input_window, self.kb, self.engine)
 
     def run(self):
         self.root.mainloop()
