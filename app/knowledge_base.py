@@ -1,5 +1,6 @@
 import json
 import os
+from sqlalchemy.exc import SQLAlchemyError
 from .database import (
     SessionLocal,
     create_tables,
@@ -14,8 +15,11 @@ from .database import (
 
 class KnowledgeBase:
     def __init__(self):
-        create_tables()
-        self.initialize_default_data()
+        try:
+            create_tables()
+            self.initialize_default_data()
+        except Exception as e:
+            print(f"Ошибка инициализации базы знаний: {e}. Используется JSON-фоллбек.")
 
     def initialize_default_data(self):
         session = SessionLocal()
@@ -39,21 +43,40 @@ class KnowledgeBase:
     def get_classes(self):
         session = SessionLocal()
         try:
-            return [cls.name for cls in session.query(MalwareClass).order_by(MalwareClass.name).all()]
+            classes = [cls.name for cls in session.query(MalwareClass).order_by(MalwareClass.name).all()]
+            if not classes:
+                classes = self._load_json_data('classes.json')
+            return classes
+        except SQLAlchemyError:
+            return self._load_json_data('classes.json')
         finally:
             session.close()
 
     def get_features(self):
         session = SessionLocal()
         try:
-            return [feature.name for feature in session.query(DiagnosticFeature).order_by(DiagnosticFeature.name).all()]
+            features = [feature.name for feature in session.query(DiagnosticFeature).order_by(DiagnosticFeature.name).all()]
+            if not features:
+                features = self._load_json_data('features.json')
+            return features
+        except SQLAlchemyError:
+            return self._load_json_data('features.json')
         finally:
             session.close()
 
     def get_feature_types(self):
         session = SessionLocal()
         try:
-            return {feature.name: feature.feature_type for feature in session.query(DiagnosticFeature).all()}
+            result = {feature.name: feature.feature_type for feature in session.query(DiagnosticFeature).all()}
+            default_types = self._load_json_data('feature_types.json')
+            if not result:
+                result = default_types
+            else:
+                for feature_name, feature_type in default_types.items():
+                    result.setdefault(feature_name, feature_type)
+            return result
+        except SQLAlchemyError:
+            return self._load_json_data('feature_types.json')
         finally:
             session.close()
 
@@ -63,7 +86,13 @@ class KnowledgeBase:
             ranges = {}
             for item in session.query(ValueRange).all():
                 ranges[item.feature.name] = [float(item.min_value), float(item.max_value)]
+            default_valid_ranges = self._load_json_data('ranges.json').get('valid_ranges', {})
+            for feature_name, value in default_valid_ranges.items():
+                if feature_name not in ranges:
+                    ranges[feature_name] = list(value)
             return ranges
+        except SQLAlchemyError:
+            return self._load_json_data('ranges.json').get('valid_ranges', {})
         finally:
             session.close()
 
@@ -73,7 +102,13 @@ class KnowledgeBase:
             ranges = {}
             for item in session.query(NormalRange).all():
                 ranges[item.feature.name] = [float(item.min_value), float(item.max_value)]
+            default_normal_ranges = self._load_json_data('ranges.json').get('normal_ranges', {})
+            for feature_name, value in default_normal_ranges.items():
+                if feature_name not in ranges:
+                    ranges[feature_name] = list(value)
             return ranges
+        except SQLAlchemyError:
+            return self._load_json_data('ranges.json').get('normal_ranges', {})
         finally:
             session.close()
 
@@ -97,6 +132,8 @@ class KnowledgeBase:
                         if feature not in result[class_name]:
                             result[class_name].append(feature)
             return result
+        except SQLAlchemyError:
+            return self._load_json_data('class_features.json')
         finally:
             session.close()
 
@@ -117,6 +154,8 @@ class KnowledgeBase:
                     for feature_name, value in values.items():
                         result[class_name].setdefault(feature_name, list(value))
             return result
+        except SQLAlchemyError:
+            return self._load_json_data('class_values.json')
         finally:
             session.close()
 

@@ -430,6 +430,8 @@ class InputSystem:
     def create_widgets(self):
         features = self.kb.get_features()
         feature_types = self.kb.get_feature_types()
+        self.feature_types = feature_types
+        self.valid_ranges = self.kb.get_valid_ranges()
 
         self.entries = {}
         content = ttk.Frame(self.root, padding=12)
@@ -446,6 +448,9 @@ class InputSystem:
             else:
                 entry = ttk.Entry(content, width=18)
                 entry.grid(row=index, column=1, sticky=tk.W, pady=6)
+                # bind focus out and key release to validate and auto-clamp the value
+                entry.bind('<FocusOut>', lambda e, f=feature, w=entry: self._on_focus_out(f, w))
+                entry.bind('<KeyRelease>', lambda e, f=feature, w=entry: self._on_key_release(f, w))
                 self.entries[feature] = entry
 
         button_frame = ttk.Frame(content)
@@ -497,49 +502,31 @@ class InputSystem:
 
     def diagnose(self):
         input_values = {}
-        corrections = []
         feature_types = self.kb.get_feature_types()
         valid_ranges = self.kb.get_valid_ranges()
 
+        # read and ensure all values are parsed and clamped (auto-clamping already applied on focus out)
+        # allow missing inputs: skip empty fields instead of forcing user to fill all
         for feature, widget in self.entries.items():
-            ftype = feature_types.get(feature, 'integer')
-            if isinstance(widget, tk.IntVar):
-                value = widget.get()
-            else:
-                raw = widget.get().strip()
-                if raw == '':
-                    messagebox.showerror("Ошибка", f"Введите значение для {feature}")
-                    return
-                try:
-                    value = float(raw)
-                except ValueError:
-                    messagebox.showerror("Ошибка", f"Неверное значение для {feature}")
-                    return
+            val = self._parse_and_clamp(feature, widget, show_error=False)
+            if val is None:
+                continue
+            input_values[feature] = val
 
-            if ftype == 'boolean':
-                value = 1 if value else 0
-            elif ftype == 'integer':
-                value = int(round(value))
+        # Проверка достаточности данных: нужно хотя бы одно совпадение введённых признаков с признаками какого-либо класса
+        class_features = self.kb.get_class_features()
+        provided = set(input_values.keys())
+        max_overlap = 0
+        for cls, feats in class_features.items():
+            if cls == 'Чистая система':
+                continue
+            overlap = len(set(feats) & provided)
+            if overlap > max_overlap:
+                max_overlap = overlap
 
-            if feature in valid_ranges:
-                range_value = valid_ranges[feature]
-                if isinstance(range_value, list) and len(range_value) == 2:
-                    low, high = range_value
-                    if value < low or value > high:
-                        corrected = min(max(value, low), high)
-                        corrections.append(f"{feature}: {value} → {corrected}")
-                        value = corrected
-                        if not isinstance(widget, tk.IntVar):
-                            widget.delete(0, tk.END)
-                            widget.insert(0, str(value))
-                        else:
-                            widget.set(value)
-
-            input_values[feature] = value
-
-        if corrections:
-            message = "Значения приведены в допустимый диапазон:\n" + "\n".join(corrections)
-            messagebox.showinfo("Корректировка данных", message)
+        if max_overlap == 0:
+            messagebox.showerror("Недостаточно данных", "Недостаточно признаков для постановки диагноза. Введите значения хотя бы для одного признака, относящегося к классам.")
+            return
 
         result = self.engine.diagnose(input_values)
         diagnosis = result.get('expert_diagnosis', 'Неизвестный класс')
@@ -555,6 +542,60 @@ class InputSystem:
         else:
             self.rejected_text.insert(tk.END, 'Нет отклонённых гипотез для данной ситуации.')
         self.rejected_text.config(state=tk.DISABLED)
+
+    def _on_focus_out(self, feature, widget):
+        # called when an entry loses focus: silently parse and clamp
+        try:
+            self._parse_and_clamp(feature, widget, show_error=False)
+        except Exception:
+            pass
+
+    def _on_key_release(self, feature, widget):
+        # called on key release: attempt to parse and clamp only if the current input is a valid number
+        try:
+            # _parse_and_clamp is safe: it returns None on invalid partial input and does not modify widget
+            self._parse_and_clamp(feature, widget, show_error=False)
+        except Exception:
+            pass
+
+    def _parse_and_clamp(self, feature, widget, show_error=False):
+        ftype = self.feature_types.get(feature, 'integer')
+        valid_ranges = self.valid_ranges
+
+        if isinstance(widget, tk.IntVar):
+            value = widget.get()
+        else:
+            raw = widget.get().strip()
+            if raw == '':
+                if show_error:
+                    messagebox.showerror("Ошибка", f"Введите значение для {feature}")
+                return None
+            try:
+                value = float(raw)
+            except ValueError:
+                if show_error:
+                    messagebox.showerror("Ошибка", f"Неверное значение для {feature}")
+                return None
+
+        if ftype == 'boolean':
+            value = 1 if value else 0
+        elif ftype == 'integer':
+            value = int(round(value))
+
+        if feature in valid_ranges:
+            range_value = valid_ranges[feature]
+            if isinstance(range_value, list) and len(range_value) >= 2:
+                low, high = range_value[0], range_value[1]
+                if value < low or value > high:
+                    value = min(max(value, low), high)
+                    # update widget with corrected value
+                    if not isinstance(widget, tk.IntVar):
+                        widget.delete(0, tk.END)
+                        widget.insert(0, str(value))
+                    else:
+                        widget.set(value)
+
+        return value
 
 class MainApp:
     def __init__(self):

@@ -1,26 +1,35 @@
 import os
-import numpy as np
-from .knowledge_base import KnowledgeBase
+
+
+ML_FEATURE_NAMES = [
+    'средняя загрузка процессора',
+    'использование оперативной памяти',
+    'исходящий сетевой трафик',
+    'операции изменения файлов',
+    'наличие устойчивого удаленного управления',
+]
 
 class DiagnosticEngine:
     def __init__(self, kb):
         self.kb = kb
         self.ml_model = None
+        self.label_encoder = None
         self.load_ml_model()
     
     def load_ml_model(self):
         """Загружает обученную ML модель"""
+        model_path = os.path.join(os.path.dirname(__file__), 'data', 'model.pkl')
+        if not os.path.exists(model_path):
+            print("Модель не найдена. Использую правила.")
+            return
+
         try:
             import pickle
-            model_path = os.path.join(os.path.dirname(__file__), 'data', 'model.pkl')
-            if os.path.exists(model_path):
-                with open(model_path, 'rb') as f:
-                    model_data = pickle.load(f)
-                self.ml_model = model_data['model']
-                self.label_encoder = model_data['label_encoder']
-                print("ML модель загружена успешно")
-            else:
-                print("Модель не найдена. Использую правила.")
+            with open(model_path, 'rb') as f:
+                model_data = pickle.load(f)
+            self.ml_model = model_data['model']
+            self.label_encoder = model_data['label_encoder']
+            print("ML модель загружена успешно")
         except Exception as e:
             print(f"Ошибка при загрузке модели: {e}")
     
@@ -30,14 +39,9 @@ class DiagnosticEngine:
             return None
         
         try:
-            # Извлекаем признаки в правильном порядке
-            features = [
-                input_values.get('средняя загрузка процессора', 0),
-                input_values.get('использование оперативной памяти', 0),
-                input_values.get('исходящий сетевой трафик', 0),
-                input_values.get('операции изменения файлов', 0),
-                input_values.get('наличие устойчивого удаленного управления', 0)
-            ]
+            import numpy as np
+
+            features = [input_values.get(feature_name, 0) for feature_name in ML_FEATURE_NAMES]
             
             X = np.array([features], dtype=np.float32)
             y_pred_encoded = self.ml_model.predict(X)[0]
@@ -77,6 +81,7 @@ class DiagnosticEngine:
         classes = self.kb.get_classes()
         class_features = self.kb.get_class_features()
         class_values = self.kb.get_class_values()
+        abnormal_feature_set = set(abnormal_features)
 
         candidates = []
         for cls in classes:
@@ -87,14 +92,13 @@ class DiagnosticEngine:
             if not features:
                 continue
 
-            shared = set(features).intersection(abnormal_features)
+            shared = set(features).intersection(abnormal_feature_set)
             if not shared:
                 continue
 
             reasons = []
             for feature in features:
                 if feature not in input_values:
-                    reasons.append(f"не задано значение признака '{feature}'")
                     continue
 
                 value = input_values[feature]
@@ -123,20 +127,18 @@ class DiagnosticEngine:
         best = candidates[0]
         diagnosis = best['class'] if len(best['reasons']) == 0 else 'Неизвестный класс'
 
-        rejected = []
-        for item in candidates:
-            if item['class'] == diagnosis:
-                continue
-            if item['reasons']:
-                rejected.append({
-                    'class': item['class'],
-                    'reason': '; '.join(item['reasons'])
-                })
+        # формируем список отклонённых гипотез: только N ближайших кандидатов
+        N = 3
+        if diagnosis != 'Неизвестный класс':
+            other_candidates = [item for item in candidates if item['class'] != diagnosis]
+            top_candidates = other_candidates[:N]
+        else:
+            # если диагноз неопределён — показываем N лучших кандидатов
+            top_candidates = candidates[:N]
 
-        if diagnosis == 'Неизвестный класс' and candidates:
-            rejected = [{
-                'class': item['class'],
-                'reason': '; '.join(item['reasons']) if item['reasons'] else 'пользовательские признаки не совпадают'
-            } for item in candidates]
+        rejected = []
+        for item in top_candidates:
+            reason_text = '; '.join(item['reasons']) if item.get('reasons') else 'пользовательские признаки не совпадают'
+            rejected.append({'class': item['class'], 'reason': reason_text})
 
         return {'diagnosis': diagnosis, 'rejected': rejected}

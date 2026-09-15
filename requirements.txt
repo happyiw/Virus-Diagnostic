@@ -1,7 +1,4 @@
-tinydb
 psycopg2-binary
 sqlalchemy
 scikit-learn
-pandas
 numpy
-python-dotenv

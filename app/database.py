@@ -1,7 +1,7 @@
 import os
 import json
 from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, Numeric, SmallInteger, ForeignKey, UniqueConstraint
-from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
 from datetime import datetime
 
@@ -28,8 +28,9 @@ class MalwareClass(Base):
     description = Column(Text)
     created_at = Column(DateTime, default=datetime.utcnow)
     
-    features = relationship("DiagnosticFeature", secondary="class_features")
-    feature_values = relationship("ClassFeatureValue")
+    features = relationship("DiagnosticFeature", secondary="class_features", overlaps="class_features,feature")
+    class_features = relationship("ClassFeature", back_populates="malware_class", overlaps="features,class_features")
+    feature_values = relationship("ClassFeatureValue", back_populates="malware_class", overlaps="feature_values,malware_class")
 
 
 class DiagnosticFeature(Base):
@@ -49,6 +50,7 @@ class ValueRange(Base):
     feature_id = Column(Integer, ForeignKey("diagnostic_features.id"), unique=True, nullable=False)
     min_value = Column(Numeric(10, 2), nullable=False)
     max_value = Column(Numeric(10, 2), nullable=False)
+    feature = relationship("DiagnosticFeature")
 
 
 class NormalRange(Base):
@@ -58,6 +60,7 @@ class NormalRange(Base):
     feature_id = Column(Integer, ForeignKey("diagnostic_features.id"), unique=True, nullable=False)
     min_value = Column(Numeric(10, 2), nullable=False)
     max_value = Column(Numeric(10, 2), nullable=False)
+    feature = relationship("DiagnosticFeature")
 
 
 class ClassFeature(Base):
@@ -67,8 +70,8 @@ class ClassFeature(Base):
     class_id = Column(Integer, ForeignKey("malware_classes.id"), nullable=False)
     feature_id = Column(Integer, ForeignKey("diagnostic_features.id"), nullable=False)
     
-    malware_class = relationship("MalwareClass", backref="class_features")
-    feature = relationship("DiagnosticFeature")
+    malware_class = relationship("MalwareClass", back_populates="class_features", overlaps="features,class_features")
+    feature = relationship("DiagnosticFeature", overlaps="features")
     
     __table_args__ = (UniqueConstraint('class_id', 'feature_id', name='_class_feature_uc'),)
 
@@ -82,8 +85,8 @@ class ClassFeatureValue(Base):
     min_value = Column(Numeric(20, 2), nullable=False)
     max_value = Column(Numeric(20, 2), nullable=False)
     
-    malware_class = relationship("MalwareClass")
-    feature = relationship("DiagnosticFeature")
+    malware_class = relationship("MalwareClass", back_populates="feature_values", overlaps="feature_values,malware_class")
+    feature = relationship("DiagnosticFeature", overlaps="features")
     
     __table_args__ = (UniqueConstraint('class_id', 'feature_id', name='_class_feature_value_uc'),)
 
@@ -139,12 +142,22 @@ def init_database_from_json():
         for feature_name, value in ranges_data.get('valid_ranges', {}).items():
             feature = session.query(DiagnosticFeature).filter_by(name=feature_name).first()
             if feature and not session.query(ValueRange).filter_by(feature_id=feature.id).first():
-                session.add(ValueRange(feature_id=feature.id, min_value=value[0], max_value=value[1]))
+                if isinstance(value, list) and len(value) == 2:
+                    session.add(ValueRange(feature_id=feature.id, min_value=value[0], max_value=value[1]))
+                elif isinstance(value, list) and len(value) == 1:
+                    session.add(ValueRange(feature_id=feature.id, min_value=value[0], max_value=value[0]))
+                else:
+                    print(f"Пропускаю некорректный valid range для {feature_name}: {value}")
 
         for feature_name, value in ranges_data.get('normal_ranges', {}).items():
             feature = session.query(DiagnosticFeature).filter_by(name=feature_name).first()
             if feature and not session.query(NormalRange).filter_by(feature_id=feature.id).first():
-                session.add(NormalRange(feature_id=feature.id, min_value=value[0], max_value=value[1]))
+                if isinstance(value, list) and len(value) == 2:
+                    session.add(NormalRange(feature_id=feature.id, min_value=value[0], max_value=value[1]))
+                elif isinstance(value, list) and len(value) == 1:
+                    session.add(NormalRange(feature_id=feature.id, min_value=value[0], max_value=value[0]))
+                else:
+                    print(f"Пропускаю некорректный normal range для {feature_name}: {value}")
 
         # Признаки классов
         with open(os.path.join(data_dir, 'class_features.json'), 'r', encoding='utf-8') as f:
@@ -170,10 +183,15 @@ def init_database_from_json():
             for feature_name, value in values.items():
                 feature = session.query(DiagnosticFeature).filter_by(name=feature_name).first()
                 if feature and not session.query(ClassFeatureValue).filter_by(class_id=malware_class.id, feature_id=feature.id).first():
-                    if isinstance(value, list) and len(value) == 2:
-                        session.add(ClassFeatureValue(class_id=malware_class.id, feature_id=feature.id, min_value=value[0], max_value=value[1]))
-                    elif isinstance(value, list) and len(value) == 1:
-                        session.add(ClassFeatureValue(class_id=malware_class.id, feature_id=feature.id, min_value=value[0], max_value=value[0]))
+                    if isinstance(value, list):
+                        if len(value) == 2:
+                            session.add(ClassFeatureValue(class_id=malware_class.id, feature_id=feature.id, min_value=value[0], max_value=value[1]))
+                        elif len(value) == 1:
+                            session.add(ClassFeatureValue(class_id=malware_class.id, feature_id=feature.id, min_value=value[0], max_value=value[0]))
+                        else:
+                            print(f"Пропускаю некорректное значение для {class_name}/{feature_name}: {value}")
+                    else:
+                        print(f"Пропускаю некорректный тип значения для {class_name}/{feature_name}: {value}")
 
         session.commit()
         print("БД инициализирована успешно из JSON файлов")
